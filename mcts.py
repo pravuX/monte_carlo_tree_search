@@ -1,121 +1,151 @@
-import random
+from collections import defaultdict
 import time
 import numpy as np
+from tictactoe import GameState
 
 
 class Node:
-    def __init__(self, state, parent=None, move=None):
-        self.state = state  # the board state (instance of GameState)
-        self.parent = parent  # the parent node
-        self.move = move  # the move that led to this state from the parent
+    def __init__(self, game_state: GameState, parent=None, move=None):
+        self.game_state: GameState = game_state
+        self.parent: Node = parent
+        self.move = move  # incoming move
 
         self.children = []
-        self.visit_count = 0  # N(vi)
-        self.total_value = 0.0  # Q(vi)
+        self.visit_count = 0
+        """
+        results = { -1: count, 1: count, 0: count}
+        """
+        self.results = defaultdict(int)
 
-        self.untried_moves = self.state.get_legal_moves()
-        self.player = self.state.turn
+        self.player_to_move = self.game_state.turn
+
+        self.unexpanded_moves = self.game_state.get_legal_moves()
 
     def is_fully_expanded(self):
-        return len(self.untried_moves) == 0
+        if self.is_terminal():
+            return True
+        # has no unvisited child
+        return len(self.unexpanded_moves) == 0
 
     def is_terminal(self):
-        return self.state.is_game_over()
+        return self.game_state.is_game_over()
 
     def expand(self):
-        move = self.untried_moves.pop()
-        next_state = self.state.make_move(move)
-        child_node = Node(next_state, parent=self, move=move)
-        self.children.append(child_node)
-        return child_node
+        move = self.unexpanded_moves.pop()
+        next_state = self.game_state.make_move(move)
+        child = Node(next_state, parent=self, move=move)
+        self.children.append(child)
 
-    def best_child(self, c_param=1.41):
-        # Upper Confidence Bound (UCT)
-        def uct(child):
-            if child.visit_count == 0:  # ensures each child is explored at least once
+        return child
+
+    def best_child(self, c_param=0.7):
+
+        def uct(child: Node):
+            if child.visit_count == 0:
                 return float('inf')
-            exploitation = child.total_value / child.visit_count
+
+            # exploitation
+            wins = child.results[self.player_to_move]
+            losses = child.results[-self.player_to_move]
+            exploitation = (wins - losses) / \
+                child.visit_count
+
             exploration = c_param * \
-                np.sqrt(np.log(self.visit_count) / child.visit_count)
+                np.sqrt(np.log(self.visit_count)/child.visit_count)
+
             return exploitation + exploration
 
         return max(self.children, key=uct)
 
 
 class MCTS:
-    def __init__(self, initial_state, max_simulations=1000, time_limit=None):
-        self.max_simulations = max_simulations
+    def __init__(self, initial_state: GameState, max_simulations=1000, time_limit=None):
         self.root = Node(initial_state)
+        self.max_simulations = max_simulations
         self.time_limit = time_limit
-
-    def rollout_policy(self, possible_moves):
-        # pick random moves
-        return random.choice(possible_moves)
+        self.simulations_run = 0
+        self.x_wins = 0
+        self.o_wins = 0
+        self.draws = 0
 
     def search(self):
+
         def search_helper():
+            # performs one iteration of MCTS
             expanded_node = self.tree_policy(self.root)
             result = self.rollout(expanded_node)
             self.backpropagate(expanded_node, result)
+            self.simulations_run += 1
+            if result == 0:
+                self.draws += 1
+            elif result == 1:
+                self.x_wins += 1
+            else:
+                self.o_wins += 1
 
-        if self.time_limit != None:
+        if self.time_limit is not None:
             end_time = time.time() + self.time_limit
             while time.time() < end_time:
                 search_helper()
             return self.get_best_move()
 
-        num_simulations = 0
-        while num_simulations < self.max_simulations:
+        # otherwise fall back to the simulation count limit
+        while self.simulations_run < self.max_simulations:
             search_helper()
-            num_simulations += 1
-
         return self.get_best_move()
 
-    def tree_policy(self, node):
-        # selection + expansion
-        while not node.is_terminal():
-            if not node.is_fully_expanded():
-                return node.expand()
-            else:
-                node = node.best_child()
-        return node
-
-    def rollout(self, node):
-        state = node.state
-        while not state.is_game_over():  # basically the terminal node
-            possible_moves = state.get_legal_moves()
-            move = self.rollout_policy(possible_moves)
-            state = state.make_move(move)  # Advance the state
-        return state.get_result()  # +1 win for X, -1 win for O, 0 draw
-
-    def backpropagate(self, node, result):
-        while node is not None:
-            node.visit_count += 1
-            # we flip the result so that, the move that lead
-            # to this node is wrt to the parent
-            # win means bad, loss means good, because the turn
-            # of this node is flipped when making the move from
-            # the parent
-            node.total_value += node.player * -result
-            node = node.parent
-
     def get_best_move(self):
+        max_child: Node = self.root.best_child(c_param=0)
         most_visited_child = max(
             self.root.children, key=lambda c: c.visit_count)
         return most_visited_child.move
 
-    def visualize_tree(self, node=None, prefix="", is_last=True):
+    def tree_policy(self, node: Node):
+        while not node.is_terminal():
+            if not node.is_fully_expanded():
+                return node.expand()
+            node = node.best_child()
+        return node
+
+    def rollout_policy(self, game_state: GameState):
+        moves = game_state.get_legal_moves()
+        return moves[np.random.randint(len(moves))]
+
+    def rollout(self, node: Node):
+        game_state = node.game_state
+
+        while not game_state.is_game_over():
+            move = self.rollout_policy(game_state)
+            game_state = game_state.make_move(move)
+
+        return game_state.get_result()
+
+    def backpropagate(self, node: Node, result):
+        while node is not None:
+            node.visit_count += 1
+            node.results[result] += 1
+            node = node.parent
+
+    def visualize_tree(self, node=None, prefix="", is_last=True, max_depth=3, current_depth=0):
         if node is None:
-            node = self.root
-            print(".")  # root node of the tree
+            node: Node = self.root
+            print("MCTS Search Tree")
+            print("================")
+
+        if current_depth > max_depth:
+            return
 
         connector = "└── " if is_last else "├── "
+        move_str = f"Move: {node.move}" if node.move != None else "Root"
+        wins = node.results[node.player_to_move]
+        avg_value = wins / node.visit_count if node.visit_count > 0 else 0
         print(
-            f"{prefix}{connector}(Move: {node.move}, Q: {node.total_value}, N: {node.visit_count}, Turn: {node.state.piece[node.player]})")
+            f"{prefix}{connector}{move_str} | Q: {wins:.3f}, N: {node.visit_count}, Q/N: {avg_value:.3f}, Turn: {GameState.piece[node.player_to_move]}")
 
         prefix += "    " if is_last else "│   "
-
-        child_count = len(node.children)
-        for i, child in enumerate(node.children):
-            is_last_child = (i == child_count - 1)
-            self.visualize_tree(child, prefix, is_last_child)
+        children = sorted(
+            node.children, key=lambda c: c.visit_count, reverse=True)
+        for i, child in enumerate(children):
+            is_last_child = (i == len(children) - 1)
+            self.visualize_tree(child, prefix, is_last_child,
+                                max_depth, current_depth + 1)
